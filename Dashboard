@@ -1,0 +1,191 @@
+import dash
+from dash.dependencies import Output, Input
+import dash_core_components as dcc
+import dash_html_components as html
+import plotly
+import dash_table
+import random
+import plotly.graph_objs as go
+from collections import deque
+import sqlite3
+import pandas as pd
+import time
+import datetime
+from collections import Counter 
+from wordcloud import WordCloud, STOPWORDS, ImageColorGenerator
+#popular topics: google, olympics, trump, gun, usa
+
+# Remember to create assets folder at the same directory level
+
+app = dash.Dash(__name__)
+
+columns = [
+    {"id": 0, "name": "unix"},
+    {"id": 1, "name": "dateTime"},
+    {"id": 2, "name": "tweet"},
+    {"id": 3, "name": "cleanedtweet"},
+    {"id": 4, "name": "sentiment"},
+    {"id": 5, "name": "sentiment_smoothed"}
+]
+
+colors = {
+    'background': '#111111',
+    'text': '#7FDBFF'
+}
+
+app.layout = html.Div(style={'backgroundColor': colors['background']}, children=[
+        html.Div([html.H1(children='Live Twitter Analytics',
+                style={'textAlign': 'center', 'color': colors['text']})]),
+            
+        html.Div([html.H2('Dashboard', 
+                style={'textAlign': 'center', 'color': colors['text']})]),
+         
+        html.Div([html.H3("Enter the term you like to do sentiment analysis",
+                style={'textAlign': 'left', 'color': colors['text']}),
+            dcc.Input(id='sentiment_term', value='Car', type='text')]),
+            
+        html.Div([    
+            html.Div([dcc.Graph(id='live-graph', animate=False),
+                dcc.Interval(id='graph-update', interval=1*1000, n_intervals=0),
+                html.Br()
+            ], style={'width': '49%', 'float': 'right', 'display': 'inline-block'}),
+       
+            html.Div([
+                dash_table.DataTable(
+                    style_data={'whiteSpace': 'normal'},
+                        css=[{'selector': '.dash-cell div.dash-cell-value',
+                            'rule': 'display: inline; white-space: inherit; overflow: inherit; text-overflow: inherit;'}],
+                    id='tweet-table',
+                    data=[],
+                    columns=[],
+                    style_table={'maxHeight': '450px', 'overflowY': 'scroll','border': 'thin lightgrey solid',
+                                'overflowX': 'scroll'},
+                    style_header={'backgroundColor': 'rgb(30, 30, 30)'},
+                    style_cell={'minWidth': '150px', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white'}),
+                    dcc.Interval(id='table-update', interval=1*1000, n_intervals=0),
+                    html.Br()
+            ],style={'width': '49%', 'float': 'left', 'display': 'inline-block'})
+        ]),
+        
+        html.Div([
+            html.Div([
+                dcc.Graph(id='bar-graph', animate=False),
+                dcc.Interval(id='bar-update', interval=1*1000, n_intervals=0)
+            ], style={'width': '44%', 'float': 'right', 'display': 'inline-block'})
+            ]),
+            html.Div(style={'backgroundColor': colors['background']},children=[
+                html.H3("WordCloud", style={
+                    'textAlign': 'center',
+                    'color': colors['text']}),
+                html.Button(['Refresh WordCloud'], id='refbutton'),
+                html.P(id='placeholder'),   # app.get_asset_url('word1.png')
+                html.Div([html.Img(id='image', height="369" , width="680")
+                ], style={'width': '44%', 'float': 'top', 'display': 'inline-block'})
+            ])
+    ])
+
+@app.callback(Output('bar-graph', 'figure'),
+            [Input('sentiment_term', 'value'), Input('bar-update', 'n_intervals')])
+def generate_bar(sentiment_term, n_clicks):
+    try:
+        conn = sqlite3.connect('twitter.db')
+        c = conn.cursor()
+        df = pd.read_sql("SELECT * FROM sentiment WHERE tweet LIKE ? ORDER BY unix DESC LIMIT 200", conn ,
+                                 params=('%' + sentiment_term + '%',))
+        df.sort_values('unix', inplace=True)
+        df.dropna(inplace=True)
+        stopwords = set(STOPWORDS)
+        df=df[-100:]
+        text = " ".join(review for review in df.cleanedtweet)
+        split_it = text.split()
+        counter = Counter(split_it) 
+        most_occur = counter.most_common(15)
+        df1=pd.DataFrame(most_occur)
+        X = df1[0]
+        Y = df1[1]
+        data = plotly.graph_objs.Bar(x=X, y=Y, name='Bar')
+        return {'data': [data], 'layout' : go.Layout(plot_bgcolor=colors['background'],
+                                                    paper_bgcolor=colors['background'],
+                                                    font={'color': colors['text']},
+                                                    title='Bar Chart - Most Frequent Term')}
+
+    except Exception as e:
+        with open('errors.txt','a') as f:
+            f.write(str(e))
+            f.write('\n')
+            
+@app.callback(Output(component_id='image', component_property='src'),
+            [Input(component_id='sentiment_term', component_property='value'),
+             Input("refbutton", "n_clicks")])
+def generate_wordcloud(sentiment_term, n_clicks):
+    try:
+        src = 'assets/word1.png'
+        if n_clicks is not None:
+            conn = sqlite3.connect('twitter.db')
+            c = conn.cursor()
+            df = pd.read_sql("SELECT * FROM sentiment WHERE tweet LIKE ? ORDER BY unix DESC LIMIT 200", conn ,
+                                 params=('%' + sentiment_term + '%',))
+            df.sort_values('unix', inplace=True)
+            df.dropna(inplace=True)
+            stopwords = set(STOPWORDS)
+            df=df[-100:]
+            text = " ".join(review for review in df.cleanedtweet)
+            wordcloud = WordCloud(stopwords=stopwords, background_color="black").generate_from_text(text)
+            ts = str(datetime.datetime.now().time()).replace(":", "_").replace(".","_")
+            wordcloud.to_file("assets/word_"+ts+".png")
+            src = "assets/word_"+ts+".png"
+        return src
+
+    except Exception as e:
+        with open('errors.txt','a') as f:
+            f.write(str(e))
+            f.write('\n')
+            
+@app.callback(Output('live-graph', 'figure'),
+              [Input(component_id='sentiment_term', component_property='value'),
+              Input(component_id='graph-update', component_property='n_intervals')])
+def update_graph_scatter(sentiment_term, n):
+    try:
+        conn = sqlite3.connect('twitter.db')
+        c = conn.cursor()
+        df = pd.read_sql("SELECT * FROM sentiment WHERE tweet LIKE ? ORDER BY unix DESC LIMIT 200", conn ,
+                         params=('%' + sentiment_term + '%',))
+        df.sort_values('unix', inplace=True)
+        df['sentiment_smoothed'] = df['sentiment'].rolling(int(len(df)/10)).mean()
+        df.dropna(inplace=True)
+        X = df.rdtime.values[-100:]
+        Y = df.sentiment_smoothed.values[-100:]
+        data = plotly.graph_objs.Scatter(x=X, y=Y, name='Scatter', mode= 'lines+markers')
+        return {'data': [data],'layout' : go.Layout(xaxis=dict(range=[min(X),max(X)]),
+                                                    yaxis=dict(range=[min(Y),max(Y)]),
+                                                    plot_bgcolor=colors['background'],
+                                                    paper_bgcolor=colors['background'],
+                                                    font={'color': colors['text']},
+                                                    title='Term: {}'.format(sentiment_term))}
+    except Exception as e:
+        with open('errors.txt','a') as f:
+            f.write(str(e))
+            f.write('\n')
+            
+@app.callback([Output('tweet-table', 'data'), Output('tweet-table', 'columns')],
+              [Input(component_id='sentiment_term', component_property='value'),
+              Input(component_id='table-update', component_property='n_intervals')])
+
+def update_graph_bar(sentiment_term, n):
+    try:
+        conn = sqlite3.connect('twitter.db')
+        c = conn.cursor()
+        df = pd.read_sql("SELECT * FROM sentiment WHERE tweet LIKE ? ORDER BY unix DESC LIMIT 200", conn ,
+                         params=('%' + sentiment_term + '%',))
+        df.sort_values('unix', inplace=True)
+        df.dropna(inplace=True)
+        df=df[-100:]
+        return df.values[0:15], columns[1:3]
+    
+    except Exception as e:
+        with open('errors.txt','a') as f:
+            f.write(str(e))
+            f.write('\n')
+            
+if __name__ == '__main__':
+    app.run_server(debug=False)
